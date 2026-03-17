@@ -1,6 +1,6 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
-const STORAGE_KEY = "track-manager-mode-switch-v8";
+const STORAGE_KEY = "track-manager-mode-switch-v9";
 const MAX_RUNNERS = 6;
 
 function formatTime(ms) {
@@ -42,22 +42,6 @@ function downloadCsv(filename, rows) {
   URL.revokeObjectURL(url);
 }
 
-function speakLap(runnerName, lapNo, splitMs, totalMs) {
-  if (!("speechSynthesis" in window)) return;
-
-  const synth = window.speechSynthesis;
-  synth.cancel();
-
-  const name = runnerName?.trim() || "選手";
-  const text = `${name}、${lapNo}周目、ラップ ${formatTime(splitMs)}、累計 ${formatTime(totalMs)}`;
-
-  const utter = new SpeechSynthesisUtterance(text);
-  utter.lang = "ja-JP";
-  utter.rate = 1.05;
-  utter.pitch = 1.0;
-  synth.speak(utter);
-}
-
 function createRunner(index) {
   return {
     id: `runner-${index + 1}`,
@@ -79,6 +63,32 @@ function createDefaultRunners() {
   return Array.from({ length: MAX_RUNNERS }, (_, i) => createRunner(i));
 }
 
+function getJapaneseVoice(voices) {
+  if (!voices || !voices.length) return null;
+  return (
+    voices.find((v) => v.lang === "ja-JP") ||
+    voices.find((v) => v.lang?.startsWith("ja")) ||
+    null
+  );
+}
+
+function speakLap(voice, runnerName, lapNo, splitMs, totalMs) {
+  if (!("speechSynthesis" in window)) return;
+
+  const synth = window.speechSynthesis;
+  synth.cancel();
+
+  const name = runnerName?.trim() || "選手";
+  const text = `${name}、${lapNo}周目、ラップ ${formatTime(splitMs)}、累計 ${formatTime(totalMs)}`;
+
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.lang = "ja-JP";
+  utter.rate = 1.0;
+  utter.pitch = 1.0;
+  if (voice) utter.voice = voice;
+  synth.speak(utter);
+}
+
 export default function App() {
   const [sessionDate, setSessionDate] = useState(nowLocalInputValue());
   const [tab, setTab] = useState("timer");
@@ -87,7 +97,8 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [mode, setMode] = useState("practice"); // practice | race
   const [raceRunning, setRaceRunning] = useState(false);
-
+  const [voices, setVoices] = useState([]);
+  const [speechEnabled, setSpeechEnabled] = useState(true);
   const intervalRef = useRef(null);
 
   useEffect(() => {
@@ -103,6 +114,10 @@ export default function App() {
 
       if (parsed.mode === "practice" || parsed.mode === "race") {
         setMode(parsed.mode);
+      }
+
+      if (typeof parsed.speechEnabled === "boolean") {
+        setSpeechEnabled(parsed.speechEnabled);
       }
 
       if (Array.isArray(parsed.runners) && parsed.runners.length === MAX_RUNNERS) {
@@ -141,9 +156,29 @@ export default function App() {
         history,
         runners: runnerSettings,
         mode,
+        speechEnabled,
       })
     );
-  }, [history, runners, mode]);
+  }, [history, runners, mode, speechEnabled]);
+
+  useEffect(() => {
+    function loadVoices() {
+      setVoices(window.speechSynthesis?.getVoices?.() || []);
+    }
+
+    loadVoices();
+    if ("speechSynthesis" in window) {
+      window.speechSynthesis.onvoiceschanged = loadVoices;
+    }
+
+    return () => {
+      if ("speechSynthesis" in window) {
+        window.speechSynthesis.onvoiceschanged = null;
+      }
+    };
+  }, []);
+
+  const japaneseVoice = useMemo(() => getJapaneseVoice(voices), [voices]);
 
   useEffect(() => {
     intervalRef.current = setInterval(() => {
@@ -349,8 +384,9 @@ export default function App() {
     );
 
     setTimeout(() => {
-      if (speechPayload) {
+      if (speechEnabled && speechPayload) {
         speakLap(
+          japaneseVoice,
           speechPayload.name,
           speechPayload.lapNo,
           speechPayload.splitMs,
@@ -523,21 +559,23 @@ export default function App() {
   const styles = {
     app: {
       fontFamily: "Arial, sans-serif",
-      maxWidth: 1500,
+      maxWidth: 1400,
       margin: "0 auto",
       padding: 10,
       background: "#f4f6fb",
       minHeight: "100vh",
+      boxSizing: "border-box",
     },
     title: {
-      fontSize: 26,
+      fontSize: 24,
       fontWeight: "bold",
       marginBottom: 4,
     },
     subtitle: {
       color: "#555",
       marginBottom: 12,
-      fontSize: 14,
+      fontSize: 13,
+      lineHeight: 1.5,
     },
     tabs: {
       display: "flex",
@@ -553,18 +591,19 @@ export default function App() {
       color: active ? "#fff" : "#111",
       fontWeight: "bold",
       cursor: "pointer",
+      flex: "1 1 140px",
     }),
     topBar: {
       background: "#fff",
       borderRadius: 16,
-      padding: 12,
+      padding: 10,
       marginBottom: 12,
       border: "1px solid #ddd",
       boxShadow: "0 2px 8px rgba(0,0,0,0.05)",
     },
     topBarGrid: {
       display: "grid",
-      gridTemplateColumns: "220px 140px 1fr 1fr 1fr 1fr 1fr",
+      gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
       gap: 8,
       alignItems: "end",
     },
@@ -576,51 +615,54 @@ export default function App() {
     },
     input: {
       width: "100%",
-      padding: 8,
+      padding: 10,
       borderRadius: 10,
       border: "1px solid #ccc",
       boxSizing: "border-box",
-      fontSize: 14,
+      fontSize: 16,
       marginBottom: 6,
+      background: "#fff",
     },
     select: {
       width: "100%",
-      padding: 8,
+      padding: 10,
       borderRadius: 10,
       border: "1px solid #ccc",
       boxSizing: "border-box",
-      fontSize: 14,
+      fontSize: 16,
       background: "#fff",
     },
     button: (bg = "#e5e7eb", color = "#111", disabled = false) => ({
       width: "100%",
       border: "none",
       borderRadius: 12,
-      padding: "14px 8px",
+      padding: "14px 10px",
       fontSize: 15,
       fontWeight: "bold",
       background: disabled ? "#d1d5db" : bg,
       color,
       cursor: disabled ? "not-allowed" : "pointer",
+      minHeight: 48,
     }),
     laneGrid: {
       display: "grid",
-      gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-      gap: 8,
+      gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+      gap: 10,
     },
     laneCard: {
       background: "#fff",
       border: "1px solid #dbe2ea",
       borderRadius: 16,
-      padding: 8,
+      padding: 10,
       boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
+      boxSizing: "border-box",
     },
     laneTop: {
       display: "grid",
-      gridTemplateColumns: "44px 1fr 1fr 68px",
+      gridTemplateColumns: "46px 1fr 1fr 62px",
       gap: 6,
-      alignItems: "center",
-      marginBottom: 6,
+      alignItems: "stretch",
+      marginBottom: 8,
     },
     laneBadge: {
       background: "#e0e7ff",
@@ -630,6 +672,9 @@ export default function App() {
       padding: "8px 4px",
       fontWeight: "bold",
       fontSize: 13,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
     },
     timerBox: {
       background: "#111827",
@@ -637,6 +682,10 @@ export default function App() {
       borderRadius: 12,
       padding: "8px 6px",
       textAlign: "center",
+      display: "flex",
+      flexDirection: "column",
+      justifyContent: "center",
+      minHeight: 58,
     },
     timerLabel: {
       fontSize: 10,
@@ -646,7 +695,8 @@ export default function App() {
     timerValue: {
       fontWeight: "bold",
       fontSize: 20,
-      letterSpacing: 1,
+      letterSpacing: 0.5,
+      whiteSpace: "nowrap",
     },
     statusBox: (running) => ({
       background: running ? "#dcfce7" : "#f3f4f6",
@@ -656,6 +706,10 @@ export default function App() {
       textAlign: "center",
       fontWeight: "bold",
       fontSize: 12,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      minHeight: 58,
     }),
     compactGrid: {
       display: "grid",
@@ -666,60 +720,65 @@ export default function App() {
       display: "grid",
       gridTemplateColumns: "1fr 1.4fr 1fr 0.9fr",
       gap: 6,
-      marginTop: 4,
-      marginBottom: 6,
+      marginTop: 6,
+      marginBottom: 8,
     },
     raceButtons: {
       display: "grid",
-      gridTemplateColumns: "2.4fr 0.9fr 0.9fr",
+      gridTemplateColumns: "2fr 0.95fr 0.95fr",
       gap: 6,
-      marginTop: 4,
-      marginBottom: 6,
+      marginTop: 6,
+      marginBottom: 8,
     },
     raceLapButton: {
       width: "100%",
       border: "none",
       borderRadius: 14,
-      padding: "22px 8px",
-      fontSize: 24,
+      padding: "18px 8px",
+      fontSize: 22,
       fontWeight: "bold",
       background: "#2563eb",
       color: "#fff",
       cursor: "pointer",
+      minHeight: 62,
     },
     raceLapButtonDisabled: {
       width: "100%",
       border: "none",
       borderRadius: 14,
-      padding: "22px 8px",
-      fontSize: 24,
+      padding: "18px 8px",
+      fontSize: 22,
       fontWeight: "bold",
       background: "#93c5fd",
       color: "#fff",
       cursor: "not-allowed",
+      minHeight: 62,
     },
     smallRaceButton: (bg = "#e5e7eb", color = "#111", disabled = false) => ({
       width: "100%",
       border: "none",
       borderRadius: 12,
-      padding: "12px 6px",
+      padding: "10px 6px",
       fontSize: 14,
       fontWeight: "bold",
       background: disabled ? "#d1d5db" : bg,
       color,
       cursor: disabled ? "not-allowed" : "pointer",
+      minHeight: 62,
     }),
     tableWrap: {
-      maxHeight: 170,
+      maxHeight: 190,
       overflowY: "auto",
       overflowX: "auto",
       border: "1px solid #e5e7eb",
       borderRadius: 12,
       marginTop: 4,
+      background: "#fff",
     },
     table: {
       width: "100%",
       borderCollapse: "collapse",
+      minWidth: 250,
     },
     thtd: {
       borderBottom: "1px solid #e5e7eb",
@@ -732,7 +791,7 @@ export default function App() {
       display: "grid",
       gridTemplateColumns: "1fr 1fr",
       gap: 6,
-      marginTop: 6,
+      marginTop: 8,
       fontSize: 12,
       color: "#555",
     },
@@ -764,7 +823,7 @@ export default function App() {
     <div style={styles.app}>
       <div style={styles.title}>陸上部マネージャー用 ラップ記録アプリ</div>
       <div style={styles.subtitle}>
-        練習用は個別スタート、試合用は全員同時スタート。試合用はラップボタンを大きくしています。
+        練習用は個別スタート、試合用は全員同時スタート。日本語読み上げ対応。スマホでも見やすい配置に調整済みです。
       </div>
 
       <div style={styles.tabs}>
@@ -806,16 +865,28 @@ export default function App() {
               </div>
 
               <div>
+                <label style={styles.label}>読み上げ</label>
+                <button
+                  style={styles.button(speechEnabled ? "#16a34a" : "#64748b", "#fff")}
+                  onClick={() => setSpeechEnabled((prev) => !prev)}
+                >
+                  {speechEnabled ? "オン" : "オフ"}
+                </button>
+              </div>
+
+              <div>
+                <label style={styles.label}>入力欄</label>
                 <button
                   style={styles.button("#334155", "#fff")}
                   onClick={() => setShowSettings((prev) => !prev)}
                 >
-                  {showSettings ? "入力欄を隠す" : "入力欄を表示"}
+                  {showSettings ? "隠す" : "表示"}
                 </button>
               </div>
 
               {mode === "race" ? (
                 <div>
+                  <label style={styles.label}>試合操作</label>
                   <button
                     style={styles.button("#16a34a", "#fff", raceRunning)}
                     onClick={startRace}
@@ -826,13 +897,15 @@ export default function App() {
                 </div>
               ) : (
                 <div>
+                  <label style={styles.label}>練習操作</label>
                   <button style={styles.button("#64748b", "#fff", true)} disabled>
-                    個別スタート式
+                    個別スタート
                   </button>
                 </div>
               )}
 
               <div>
+                <label style={styles.label}>全体操作</label>
                 <button
                   style={styles.button(
                     mode === "race" ? "#f59e0b" : "#dc2626",
@@ -847,12 +920,14 @@ export default function App() {
               </div>
 
               <div>
+                <label style={styles.label}>保存</label>
                 <button style={styles.button("#111827", "#fff")} onClick={saveRecord}>
                   記録を保存
                 </button>
               </div>
 
               <div>
+                <label style={styles.label}>出力</label>
                 <button style={styles.button("#2563eb", "#fff")} onClick={exportCurrentCsv}>
                   CSV出力
                 </button>
