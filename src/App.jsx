@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-const STORAGE_KEY = "track-manager-mode-switch-v9";
+const STORAGE_KEY = "track-manager-3mode-v12";
 const MAX_RUNNERS = 6;
 
 function formatTime(ms) {
@@ -11,6 +11,20 @@ function formatTime(ms) {
   const sec = totalSec % 60;
   const min = Math.floor(totalSec / 60);
   return `${min}:${String(sec).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
+}
+
+function formatTimeForSpeech(ms) {
+  const safeMs = Math.max(0, ms || 0);
+  const totalCs = Math.floor(safeMs / 10);
+  const cs = totalCs % 100;
+  const totalSec = Math.floor(totalCs / 100);
+  const sec = totalSec % 60;
+  const min = Math.floor(totalSec / 60);
+
+  if (min > 0) {
+    return `${min}分${sec}秒${String(cs).padStart(2, "0")}`;
+  }
+  return `${sec}秒${String(cs).padStart(2, "0")}`;
 }
 
 function nowLocalInputValue() {
@@ -72,14 +86,16 @@ function getJapaneseVoice(voices) {
   );
 }
 
-function speakLap(voice, runnerName, lapNo, splitMs, totalMs) {
+function speakLap(voice, runnerName, lane, lapNo, splitMs, totalMs) {
   if (!("speechSynthesis" in window)) return;
 
   const synth = window.speechSynthesis;
   synth.cancel();
 
-  const name = runnerName?.trim() || "選手";
-  const text = `${name}、${lapNo}周目、ラップ ${formatTime(splitMs)}、累計 ${formatTime(totalMs)}`;
+  const displayName = runnerName?.trim() ? runnerName.trim() : `レーン${lane}`;
+  const splitText = formatTimeForSpeech(splitMs);
+  const totalText = formatTimeForSpeech(totalMs);
+  const text = `${displayName}、${lapNo}周目、ラップ${splitText}、累計${totalText}`;
 
   const utter = new SpeechSynthesisUtterance(text);
   utter.lang = "ja-JP";
@@ -95,10 +111,11 @@ export default function App() {
   const [history, setHistory] = useState([]);
   const [runners, setRunners] = useState(createDefaultRunners());
   const [showSettings, setShowSettings] = useState(false);
-  const [mode, setMode] = useState("practice"); // practice | race
+  const [mode, setMode] = useState("practice"); // practice | race | race_focus
   const [raceRunning, setRaceRunning] = useState(false);
-  const [voices, setVoices] = useState([]);
   const [speechEnabled, setSpeechEnabled] = useState(true);
+  const [voices, setVoices] = useState([]);
+
   const intervalRef = useRef(null);
 
   useEffect(() => {
@@ -112,7 +129,7 @@ export default function App() {
         setHistory(parsed.history);
       }
 
-      if (parsed.mode === "practice" || parsed.mode === "race") {
+      if (["practice", "race", "race_focus"].includes(parsed.mode)) {
         setMode(parsed.mode);
       }
 
@@ -167,6 +184,7 @@ export default function App() {
     }
 
     loadVoices();
+
     if ("speechSynthesis" in window) {
       window.speechSynthesis.onvoiceschanged = loadVoices;
     }
@@ -226,7 +244,7 @@ export default function App() {
   }
 
   function startRace() {
-    if (mode !== "race" || raceRunning) return;
+    if (!["race", "race_focus"].includes(mode) || raceRunning) return;
 
     const startTime = Date.now();
     setRaceRunning(true);
@@ -268,7 +286,7 @@ export default function App() {
   }
 
   function stopAllRace() {
-    if (mode !== "race") return;
+    if (!["race", "race_focus"].includes(mode)) return;
 
     setRaceRunning(false);
 
@@ -361,6 +379,7 @@ export default function App() {
 
         speechPayload = {
           name: runner.name,
+          lane: runner.lane,
           lapNo,
           splitMs: split,
           totalMs: totalElapsed,
@@ -388,6 +407,7 @@ export default function App() {
         speakLap(
           japaneseVoice,
           speechPayload.name,
+          speechPayload.lane,
           speechPayload.lapNo,
           speechPayload.splitMs,
           speechPayload.totalMs
@@ -431,11 +451,19 @@ export default function App() {
   }
 
   function exportCurrentCsv() {
+    const modeName =
+      mode === "practice"
+        ? "練習用"
+        : mode === "race"
+          ? "試合用"
+          : "試合特化用";
+
     const rows = [
       [
         "モード",
         "日付",
         "レーン",
+        "表示名",
         "選手名",
         "種目",
         "メニュー",
@@ -449,12 +477,15 @@ export default function App() {
     ];
 
     runners.forEach((runner) => {
+      const displayName = `L${runner.lane}${runner.name ? ` ${runner.name}` : ""}`;
+
       if (runner.laps.length === 0) {
         if (runner.elapsedMs > 0 || runner.name || runner.eventName || runner.menu || runner.memo) {
           rows.push([
-            mode === "practice" ? "練習用" : "試合用",
+            modeName,
             sessionDate,
             runner.lane,
+            displayName,
             runner.name,
             runner.eventName,
             runner.menu,
@@ -469,9 +500,10 @@ export default function App() {
       } else {
         runner.laps.forEach((lap) => {
           rows.push([
-            mode === "practice" ? "練習用" : "試合用",
+            modeName,
             sessionDate,
             runner.lane,
+            displayName,
             runner.name,
             runner.eventName,
             runner.menu,
@@ -486,7 +518,7 @@ export default function App() {
       }
     });
 
-    downloadCsv("current-laps-mode-switch.csv", rows);
+    downloadCsv("current-laps-3mode.csv", rows);
   }
 
   function exportHistoryCsv() {
@@ -501,6 +533,7 @@ export default function App() {
         "日付",
         "保存日時",
         "レーン",
+        "表示名",
         "選手名",
         "種目",
         "メニュー",
@@ -514,13 +547,23 @@ export default function App() {
     ];
 
     history.forEach((record) => {
+      const modeName =
+        record.mode === "practice"
+          ? "練習用"
+          : record.mode === "race"
+            ? "試合用"
+            : "試合特化用";
+
       record.runners.forEach((runner) => {
+        const displayName = `L${runner.lane}${runner.name ? ` ${runner.name}` : ""}`;
+
         if (!runner.laps.length) {
           rows.push([
-            record.mode === "practice" ? "練習用" : "試合用",
+            modeName,
             record.sessionDate,
             record.createdAt,
             runner.lane,
+            displayName,
             runner.name,
             runner.eventName,
             runner.menu,
@@ -534,10 +577,11 @@ export default function App() {
         } else {
           runner.laps.forEach((lap) => {
             rows.push([
-              record.mode === "practice" ? "練習用" : "試合用",
+              modeName,
               record.sessionDate,
               record.createdAt,
               runner.lane,
+              displayName,
               runner.name,
               runner.eventName,
               runner.menu,
@@ -553,8 +597,245 @@ export default function App() {
       });
     });
 
-    downloadCsv("lap-history-mode-switch.csv", rows);
+    downloadCsv("lap-history-3mode.csv", rows);
   }
+
+  function laneLabel(runner) {
+    return `L${runner.lane}${runner.name ? ` ${runner.name}` : ""}`;
+  }
+
+  function renderNormalCard(runner) {
+    return (
+      <>
+        <div style={styles.laneTop}>
+          <div style={styles.laneBadge}>{laneLabel(runner)}</div>
+
+          <div style={styles.timerBox}>
+            <div style={styles.timerLabel}>経過</div>
+            <div style={styles.timerValue}>{formatTime(runner.elapsedMs)}</div>
+          </div>
+
+          <div style={styles.timerBox}>
+            <div style={styles.timerLabel}>現在ラップ</div>
+            <div style={styles.timerValue}>{formatTime(runner.currentLapElapsedMs)}</div>
+          </div>
+
+          <div style={styles.statusBox(runner.running)}>
+            {runner.running ? "計測中" : "停止中"}
+          </div>
+        </div>
+
+        {showSettings && (
+          <>
+            <div style={styles.compactGrid}>
+              <div>
+                <label style={styles.label}>選手名</label>
+                <input
+                  style={styles.input}
+                  value={runner.name}
+                  onChange={(e) => updateRunner(runner.id, "name", e.target.value)}
+                  placeholder="選手名"
+                />
+              </div>
+              <div>
+                <label style={styles.label}>種目</label>
+                <input
+                  style={styles.input}
+                  value={runner.eventName}
+                  onChange={(e) => updateRunner(runner.id, "eventName", e.target.value)}
+                  placeholder="1500m"
+                />
+              </div>
+            </div>
+
+            <div style={styles.compactGrid}>
+              <div>
+                <label style={styles.label}>メニュー</label>
+                <input
+                  style={styles.input}
+                  value={runner.menu}
+                  onChange={(e) => updateRunner(runner.id, "menu", e.target.value)}
+                  placeholder="400m×5"
+                />
+              </div>
+              <div>
+                <label style={styles.label}>メモ</label>
+                <input
+                  style={styles.input}
+                  value={runner.memo}
+                  onChange={(e) => updateRunner(runner.id, "memo", e.target.value)}
+                  placeholder="補足"
+                />
+              </div>
+            </div>
+          </>
+        )}
+
+        {mode === "practice" ? (
+          <div style={styles.practiceButtons}>
+            <button
+              style={styles.button("#16a34a", "#fff", runner.running)}
+              onClick={() => startRunner(runner.id)}
+              disabled={runner.running}
+            >
+              開始
+            </button>
+
+            <button
+              style={styles.button("#2563eb", "#fff", !runner.running)}
+              onClick={() => recordLap(runner.id)}
+              disabled={!runner.running}
+            >
+              ラップ
+            </button>
+
+            <button
+              style={styles.button("#f59e0b", "#fff", !runner.running)}
+              onClick={() => stopRunner(runner.id)}
+              disabled={!runner.running}
+            >
+              停止
+            </button>
+
+            <button
+              style={styles.button("#ef4444", "#fff")}
+              onClick={() => resetRunner(runner.id)}
+            >
+              消去
+            </button>
+          </div>
+        ) : (
+          <div style={styles.raceButtons}>
+            <button
+              style={runner.running ? styles.raceLapButton : styles.raceLapButtonDisabled}
+              onClick={() => recordLap(runner.id)}
+              disabled={!runner.running}
+            >
+              ラップ
+            </button>
+
+            <button
+              style={styles.smallRaceButton("#f59e0b", "#fff", !runner.running)}
+              onClick={() => stopRunner(runner.id)}
+              disabled={!runner.running}
+            >
+              停止
+            </button>
+
+            <button
+              style={styles.smallRaceButton("#ef4444", "#fff", false)}
+              onClick={() => resetRunner(runner.id)}
+            >
+              消去
+            </button>
+          </div>
+        )}
+
+        <div style={styles.tableWrap}>
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                <th style={styles.thtd}>Lap</th>
+                <th style={styles.thtd}>Split</th>
+                <th style={styles.thtd}>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {runner.laps.length === 0 ? (
+                <tr>
+                  <td style={styles.thtd} colSpan={3}>
+                    まだラップはありません
+                  </td>
+                </tr>
+              ) : (
+                runner.laps.map((lap) => (
+                  <tr key={lap.id}>
+                    <td style={styles.thtd}>{lap.lapNo}</td>
+                    <td style={styles.thtd}>{formatTime(lap.splitMs)}</td>
+                    <td style={styles.thtd}>{formatTime(lap.totalMs)}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div style={styles.subInfo}>
+          <div>
+            最新ラップ:{" "}
+            {runner.laps.length
+              ? formatTime(runner.laps[runner.laps.length - 1].splitMs)
+              : "-"}
+          </div>
+          <div>周回数: {runner.laps.length}</div>
+        </div>
+
+        <div style={{ marginTop: 6 }}>
+          <button
+            style={styles.button("#e5e7eb", "#111", runner.laps.length === 0)}
+            onClick={() => removeLastLap(runner.id)}
+            disabled={runner.laps.length === 0}
+          >
+            1つ戻す
+          </button>
+        </div>
+      </>
+    );
+  }
+
+  function renderRaceFocusCard(runner) {
+    return (
+      <>
+        <div style={styles.focusTop}>
+          <div style={styles.focusLane}>{laneLabel(runner)}</div>
+          <div style={styles.focusTimer}>
+            <div style={styles.focusTimerLabel}>経過</div>
+            <div style={styles.focusTimerValue}>{formatTime(runner.elapsedMs)}</div>
+          </div>
+          <div style={styles.focusTimer}>
+            <div style={styles.focusTimerLabel}>現在ラップ</div>
+            <div style={styles.focusTimerValue}>{formatTime(runner.currentLapElapsedMs)}</div>
+          </div>
+        </div>
+
+        <div style={styles.focusButtons}>
+          <button
+            style={runner.running ? styles.focusLapButton : styles.focusLapButtonDisabled}
+            onClick={() => recordLap(runner.id)}
+            disabled={!runner.running}
+          >
+            ラップ
+          </button>
+          <button
+            style={styles.focusSmallButton("#f59e0b", "#fff", !runner.running)}
+            onClick={() => stopRunner(runner.id)}
+            disabled={!runner.running}
+          >
+            停止
+          </button>
+          <button
+            style={styles.focusSmallButton("#ef4444", "#fff", false)}
+            onClick={() => resetRunner(runner.id)}
+          >
+            消去
+          </button>
+        </div>
+
+        <div style={styles.focusBottomInfo}>
+          <div>
+            最新:{" "}
+            {runner.laps.length
+              ? formatTime(runner.laps[runner.laps.length - 1].splitMs)
+              : "-"}
+          </div>
+          <div>周回: {runner.laps.length}</div>
+          <div>{runner.running ? "計測中" : "停止中"}</div>
+        </div>
+      </>
+    );
+  }
+
+  const visibleRunners = mode === "race_focus" ? runners.slice(0, 4) : runners;
 
   const styles = {
     app: {
@@ -659,7 +940,7 @@ export default function App() {
     },
     laneTop: {
       display: "grid",
-      gridTemplateColumns: "46px 1fr 1fr 62px",
+      gridTemplateColumns: "110px 1fr 1fr 62px",
       gap: 6,
       alignItems: "stretch",
       marginBottom: 8,
@@ -669,12 +950,14 @@ export default function App() {
       color: "#3730a3",
       borderRadius: 12,
       textAlign: "center",
-      padding: "8px 4px",
+      padding: "8px 6px",
       fontWeight: "bold",
       fontSize: 13,
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
+      lineHeight: 1.2,
+      wordBreak: "break-word",
     },
     timerBox: {
       background: "#111827",
@@ -817,13 +1100,108 @@ export default function App() {
       fontSize: 12,
       color: "#666",
     },
+
+    focusTop: {
+      display: "grid",
+      gridTemplateColumns: "120px 1fr 1fr",
+      gap: 8,
+      marginBottom: 10,
+      alignItems: "stretch",
+    },
+    focusLane: {
+      background: "#e0e7ff",
+      color: "#3730a3",
+      borderRadius: 14,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontWeight: "bold",
+      fontSize: 20,
+      minHeight: 78,
+      padding: "6px",
+      textAlign: "center",
+      lineHeight: 1.2,
+      wordBreak: "break-word",
+    },
+    focusTimer: {
+      background: "#0f172a",
+      color: "#fff",
+      borderRadius: 14,
+      display: "flex",
+      flexDirection: "column",
+      justifyContent: "center",
+      alignItems: "center",
+      minHeight: 78,
+      padding: 6,
+    },
+    focusTimerLabel: {
+      fontSize: 12,
+      opacity: 0.85,
+      marginBottom: 4,
+    },
+    focusTimerValue: {
+      fontSize: 28,
+      fontWeight: "bold",
+      letterSpacing: 0.5,
+      whiteSpace: "nowrap",
+    },
+    focusButtons: {
+      display: "grid",
+      gridTemplateColumns: "2fr 1fr 1fr",
+      gap: 8,
+      marginBottom: 10,
+    },
+    focusLapButton: {
+      width: "100%",
+      border: "none",
+      borderRadius: 16,
+      padding: "22px 8px",
+      fontSize: 28,
+      fontWeight: "bold",
+      background: "#2563eb",
+      color: "#fff",
+      cursor: "pointer",
+      minHeight: 82,
+    },
+    focusLapButtonDisabled: {
+      width: "100%",
+      border: "none",
+      borderRadius: 16,
+      padding: "22px 8px",
+      fontSize: 28,
+      fontWeight: "bold",
+      background: "#93c5fd",
+      color: "#fff",
+      cursor: "not-allowed",
+      minHeight: 82,
+    },
+    focusSmallButton: (bg = "#e5e7eb", color = "#111", disabled = false) => ({
+      width: "100%",
+      border: "none",
+      borderRadius: 14,
+      padding: "14px 8px",
+      fontSize: 18,
+      fontWeight: "bold",
+      background: disabled ? "#d1d5db" : bg,
+      color,
+      cursor: disabled ? "not-allowed" : "pointer",
+      minHeight: 82,
+    }),
+    focusBottomInfo: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr 1fr",
+      gap: 8,
+      fontSize: 14,
+      color: "#555",
+      textAlign: "center",
+    },
   };
 
   return (
     <div style={styles.app}>
       <div style={styles.title}>陸上部マネージャー用 ラップ記録アプリ</div>
       <div style={styles.subtitle}>
-        練習用は個別スタート、試合用は全員同時スタート。日本語読み上げ対応。スマホでも見やすい配置に調整済みです。
+        練習用・試合用・試合特化用の3モード対応。読み上げは「1秒37」「1分1秒37」の形で読んで、試合特化用でもCSVと履歴を使えます。
       </div>
 
       <div style={styles.tabs}>
@@ -861,6 +1239,7 @@ export default function App() {
                 >
                   <option value="practice">練習用</option>
                   <option value="race">試合用</option>
+                  <option value="race_focus">試合特化用</option>
                 </select>
               </div>
 
@@ -884,9 +1263,16 @@ export default function App() {
                 </button>
               </div>
 
-              {mode === "race" ? (
+              {mode === "practice" ? (
                 <div>
-                  <label style={styles.label}>試合操作</label>
+                  <label style={styles.label}>操作</label>
+                  <button style={styles.button("#64748b", "#fff", true)} disabled>
+                    個別スタート
+                  </button>
+                </div>
+              ) : (
+                <div>
+                  <label style={styles.label}>一斉操作</label>
                   <button
                     style={styles.button("#16a34a", "#fff", raceRunning)}
                     onClick={startRace}
@@ -895,27 +1281,20 @@ export default function App() {
                     全員同時スタート
                   </button>
                 </div>
-              ) : (
-                <div>
-                  <label style={styles.label}>練習操作</label>
-                  <button style={styles.button("#64748b", "#fff", true)} disabled>
-                    個別スタート
-                  </button>
-                </div>
               )}
 
               <div>
                 <label style={styles.label}>全体操作</label>
                 <button
                   style={styles.button(
-                    mode === "race" ? "#f59e0b" : "#dc2626",
+                    mode === "practice" ? "#dc2626" : "#f59e0b",
                     "#fff",
-                    mode === "race" ? !raceRunning : false
+                    mode === "practice" ? false : !raceRunning
                   )}
-                  onClick={mode === "race" ? stopAllRace : resetAll}
-                  disabled={mode === "race" ? !raceRunning : false}
+                  onClick={mode === "practice" ? resetAll : stopAllRace}
+                  disabled={mode === "practice" ? false : !raceRunning}
                 >
-                  {mode === "race" ? "全員停止" : "全員リセット"}
+                  {mode === "practice" ? "全員リセット" : "全員停止"}
                 </button>
               </div>
 
@@ -936,180 +1315,9 @@ export default function App() {
           </div>
 
           <div style={styles.laneGrid}>
-            {runners.map((runner) => (
+            {visibleRunners.map((runner) => (
               <div key={runner.id} style={styles.laneCard}>
-                <div style={styles.laneTop}>
-                  <div style={styles.laneBadge}>L{runner.lane}</div>
-
-                  <div style={styles.timerBox}>
-                    <div style={styles.timerLabel}>経過</div>
-                    <div style={styles.timerValue}>{formatTime(runner.elapsedMs)}</div>
-                  </div>
-
-                  <div style={styles.timerBox}>
-                    <div style={styles.timerLabel}>現在ラップ</div>
-                    <div style={styles.timerValue}>{formatTime(runner.currentLapElapsedMs)}</div>
-                  </div>
-
-                  <div style={styles.statusBox(runner.running)}>
-                    {runner.running ? "計測中" : "停止中"}
-                  </div>
-                </div>
-
-                {showSettings && (
-                  <>
-                    <div style={styles.compactGrid}>
-                      <div>
-                        <label style={styles.label}>選手名</label>
-                        <input
-                          style={styles.input}
-                          value={runner.name}
-                          onChange={(e) => updateRunner(runner.id, "name", e.target.value)}
-                          placeholder="選手名"
-                        />
-                      </div>
-                      <div>
-                        <label style={styles.label}>種目</label>
-                        <input
-                          style={styles.input}
-                          value={runner.eventName}
-                          onChange={(e) => updateRunner(runner.id, "eventName", e.target.value)}
-                          placeholder="1500m"
-                        />
-                      </div>
-                    </div>
-
-                    <div style={styles.compactGrid}>
-                      <div>
-                        <label style={styles.label}>メニュー</label>
-                        <input
-                          style={styles.input}
-                          value={runner.menu}
-                          onChange={(e) => updateRunner(runner.id, "menu", e.target.value)}
-                          placeholder="400m×5"
-                        />
-                      </div>
-                      <div>
-                        <label style={styles.label}>メモ</label>
-                        <input
-                          style={styles.input}
-                          value={runner.memo}
-                          onChange={(e) => updateRunner(runner.id, "memo", e.target.value)}
-                          placeholder="補足"
-                        />
-                      </div>
-                    </div>
-                  </>
-                )}
-
-                {mode === "practice" ? (
-                  <div style={styles.practiceButtons}>
-                    <button
-                      style={styles.button("#16a34a", "#fff", runner.running)}
-                      onClick={() => startRunner(runner.id)}
-                      disabled={runner.running}
-                    >
-                      開始
-                    </button>
-
-                    <button
-                      style={styles.button("#2563eb", "#fff", !runner.running)}
-                      onClick={() => recordLap(runner.id)}
-                      disabled={!runner.running}
-                    >
-                      ラップ
-                    </button>
-
-                    <button
-                      style={styles.button("#f59e0b", "#fff", !runner.running)}
-                      onClick={() => stopRunner(runner.id)}
-                      disabled={!runner.running}
-                    >
-                      停止
-                    </button>
-
-                    <button
-                      style={styles.button("#ef4444", "#fff")}
-                      onClick={() => resetRunner(runner.id)}
-                    >
-                      消去
-                    </button>
-                  </div>
-                ) : (
-                  <div style={styles.raceButtons}>
-                    <button
-                      style={runner.running ? styles.raceLapButton : styles.raceLapButtonDisabled}
-                      onClick={() => recordLap(runner.id)}
-                      disabled={!runner.running}
-                    >
-                      ラップ
-                    </button>
-
-                    <button
-                      style={styles.smallRaceButton("#f59e0b", "#fff", !runner.running)}
-                      onClick={() => stopRunner(runner.id)}
-                      disabled={!runner.running}
-                    >
-                      停止
-                    </button>
-
-                    <button
-                      style={styles.smallRaceButton("#ef4444", "#fff", false)}
-                      onClick={() => resetRunner(runner.id)}
-                    >
-                      消去
-                    </button>
-                  </div>
-                )}
-
-                <div style={styles.tableWrap}>
-                  <table style={styles.table}>
-                    <thead>
-                      <tr>
-                        <th style={styles.thtd}>Lap</th>
-                        <th style={styles.thtd}>Split</th>
-                        <th style={styles.thtd}>Total</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {runner.laps.length === 0 ? (
-                        <tr>
-                          <td style={styles.thtd} colSpan={3}>
-                            まだラップはありません
-                          </td>
-                        </tr>
-                      ) : (
-                        runner.laps.map((lap) => (
-                          <tr key={lap.id}>
-                            <td style={styles.thtd}>{lap.lapNo}</td>
-                            <td style={styles.thtd}>{formatTime(lap.splitMs)}</td>
-                            <td style={styles.thtd}>{formatTime(lap.totalMs)}</td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div style={styles.subInfo}>
-                  <div>
-                    最新ラップ:{" "}
-                    {runner.laps.length
-                      ? formatTime(runner.laps[runner.laps.length - 1].splitMs)
-                      : "-"}
-                  </div>
-                  <div>周回数: {runner.laps.length}</div>
-                </div>
-
-                <div style={{ marginTop: 6 }}>
-                  <button
-                    style={styles.button("#e5e7eb", "#111", runner.laps.length === 0)}
-                    onClick={() => removeLastLap(runner.id)}
-                    disabled={runner.laps.length === 0}
-                  >
-                    1つ戻す
-                  </button>
-                </div>
+                {mode === "race_focus" ? renderRaceFocusCard(runner) : renderNormalCard(runner)}
               </div>
             ))}
           </div>
@@ -1134,7 +1342,12 @@ export default function App() {
             history.map((record) => (
               <div key={record.id} style={styles.recordBox}>
                 <div style={{ fontWeight: "bold", marginBottom: 6 }}>
-                  {record.mode === "practice" ? "練習用" : "試合用"} / 日時: {record.sessionDate}
+                  {record.mode === "practice"
+                    ? "練習用"
+                    : record.mode === "race"
+                      ? "試合用"
+                      : "試合特化用"}{" "}
+                  / 日時: {record.sessionDate}
                 </div>
                 <div style={{ fontSize: 12, color: "#666", marginBottom: 8 }}>
                   保存日時: {record.createdAt}
@@ -1152,8 +1365,7 @@ export default function App() {
                     }}
                   >
                     <div style={{ marginBottom: 6 }}>
-                      <span style={styles.badge}>Lane {runner.lane}</span>
-                      <span style={styles.badge}>{runner.name || "未入力"}</span>
+                      <span style={styles.badge}>{`L${runner.lane}${runner.name ? ` ${runner.name}` : ""}`}</span>
                       <span style={styles.badge}>{runner.eventName}</span>
                       <span style={styles.badge}>{runner.menu}</span>
                     </div>
